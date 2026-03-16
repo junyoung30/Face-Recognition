@@ -1,8 +1,6 @@
 import torch
 from torch.utils.data import DataLoader
-
 from data.datasets.kface_dataset import KFaceDataset
-from data.datasets.feret_dataset import FERETDataset
 
 from utils import get_embedding
 
@@ -14,25 +12,19 @@ class ReplayBuffer:
         config, 
         strategy_func, 
         device,
-        dataset_name,
     ):
         self.config = config
         self.device = device
         self.strategy_func = strategy_func
-        self.dataset_name = dataset_name
         self.paths = []
         self.labels = []
         
     def sample(self, model, paths, labels):
-        if self.dataset_name == "kface":
-            ds = KFaceDataset(
-                paths, self.config.test_transform, self.config.resolution
-            )
-        elif self.dataset_name == "feret":
-            ds = FERETDataset(
-                paths, labels, self.config.test_transform
-            )
-            
+        ds = KFaceDataset(
+            paths, self.config.root_path, self.config.resolution,
+            self.config.test_transform
+        )
+
         loader = DataLoader(
             ds, 
             batch_size=self.config.batch_size, 
@@ -54,15 +46,11 @@ class ReplayBuffer:
         return self.paths, self.labels
     
     def sample_new(self, model, paths, labels):
-        if self.dataset_name == "kface":
-            ds = KFaceDataset(
-                paths, self.config.test_transform, self.config.resolution
-            )
-        elif self.dataset_name == "feret":
-            ds = FERETDataset(
-                paths, labels, self.config.test_transform
-            )
-            
+        ds = KFaceDataset(
+            paths, self.config.root_path, self.config.resolution,
+            self.config.test_transform
+        )
+
         loader = DataLoader(
             ds, 
             batch_size=self.config.batch_size, 

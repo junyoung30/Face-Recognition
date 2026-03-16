@@ -3,20 +3,19 @@ import time
 import datetime
 import random
 import numpy as np
+import itertools
 from tqdm import tqdm
 
 import torch
 import torch.optim as optim
-from torch.utils.data import DataLoader
 
-from .trainer_base import TrainerBase
+from .base_trainer import TrainerBase
 from .replay_buffer import ReplayBuffer
+from .trainer import train_epoch
 
-from models.facenet import TripletLoss
+from models import TripletLoss
 from data.datasets.kface_dataset import KFaceDataset
-from data.datasets.feret_dataset import FERETDataset
 from data.samplers.kface_batch_sampler import KFaceBatchSampler
-from data.samplers.feret_batch_sampler import FERETBatchSampler
 from utils import get_embedding, get_database, find_best_tpir
 
 
@@ -36,14 +35,13 @@ def set_global_seed(seed):
 class TripletTrainer(TrainerBase):
     def __init__(
         self,
-        config, 
+        config,
         device,
         save_folder,
         data,
         model_names, 
         sample_strategy,
         training_strategy,
-        dataset_name,
         triplet_fn
     ):
         super().__init__(config, device, save_folder)
@@ -51,22 +49,21 @@ class TripletTrainer(TrainerBase):
         self.data = data
         self.model_names = model_names
         self.strategy = training_strategy # 'replay' or 'finetune' or 'full'
-        self.dataset_name = dataset_name  # 'kface' or 'feret'
         self.triplet_fn = triplet_fn
         self.replay_buffer = ReplayBuffer(
-            config, sample_strategy, device, self.dataset_name
+            config, sample_strategy, device
         )
     
     def _val_paths_labels(self, phase):
         if phase == 0:
-            known_paths = self.data['D_val_img_paths'][0]
-            known_labels = self.data['D_val_labels'][0]
+            known_paths = self.data.D_val_img_paths[0]
+            known_labels = self.data.D_val_labels[0]
         else:
-            known_paths = sum(self.data['D_val_img_paths'][:phase+1], [])
-            known_labels = sum(self.data['D_val_labels'][:phase+1], [])
+            known_paths = sum(self.data.D_val_img_paths[:phase+1], [])
+            known_labels = sum(self.data.D_val_labels[:phase+1], [])
             
-        val_paths = known_paths + self.data['uk_val_img_paths']
-        val_labels = known_labels + self.data['uk_val_labels']
+        val_paths = known_paths + self.data.uk_val_img_paths
+        val_labels = known_labels + self.data.uk_val_labels
         return val_paths, val_labels
     
     def _train_phase(
@@ -81,47 +78,21 @@ class TripletTrainer(TrainerBase):
         optimizer = optim.Adam(model.parameters(), lr=self.config.lr)
         criterion = TripletLoss(margin=self.config.margin)
         
-        if self.dataset_name == "kface":
-            tr_ds = KFaceDataset(
-                tr_paths, 
-                self.config.tr_transform, 
-                self.config.resolution
-            )
-            tr_sampler = KFaceBatchSampler(
-                tr_ds, 
-                batch_size=self.config.batch_size
-            )
-            gal_ds = KFaceDataset(
-                gallery_paths, 
-                self.config.test_transform, 
-                self.config.resolution
-            )
-            val_ds = KFaceDataset(
-                val_paths, 
-                self.config.test_transform, 
-                self.config.resolution
-            )
-            
-        elif self.dataset_name == "feret":
-            tr_ds = FERETDataset(
-                tr_paths, 
-                tr_labels, 
-                self.config.tr_transform
-            )
-            tr_sampler = FERETBatchSampler(
-                tr_ds, 
-                batch_size=self.config.batch_size
-            )
-            gal_ds = FERETDataset(
-                gallery_paths, 
-                gallery_labels, 
-                self.config.test_transform
-            )
-            val_ds = FERETDataset(
-                val_paths, 
-                val_labels, 
-                self.config.test_transform
-            )
+        tr_ds = KFaceDataset(
+            tr_paths, self.config.root_path, self.config.resolution, 
+            self.config.tr_transform
+        )
+        tr_sampler = KFaceBatchSampler(
+            tr_ds, batch_size=self.config.batch_size
+        )
+        gal_ds = KFaceDataset(
+            gallery_paths, self.config.root_path, self.config.resolution,
+            self.config.test_transform
+        )
+        val_ds = KFaceDataset(
+            val_paths, self.config.root_path, self.config.resolution,
+            self.config.test_transform
+        )
             
         tr_loader = self._make_train_loader(tr_ds, tr_sampler)
         gallery_loader = self._make_eval_loader(gal_ds)
@@ -181,8 +152,8 @@ class TripletTrainer(TrainerBase):
         print("\n=== Initial Phase ===")
         set_global_seed(1234)
         
-        tr_paths  = self.data['D_tr_img_paths'][0]
-        tr_labels = self.data['D_tr_labels'][0]
+        tr_paths  = self.data.D_tr_img_paths[0]
+        tr_labels = self.data.D_tr_labels[0]
         
         gallery_paths  = tr_paths.copy()
         gallery_labels = tr_labels.copy()
@@ -218,14 +189,14 @@ class TripletTrainer(TrainerBase):
                 p.requires_grad = True
         
         if self.strategy == "replay":
-            prev_paths  = self.data['D_tr_img_paths'][phase - 1]
-            prev_labels = self.data['D_tr_labels'][phase - 1]
+            prev_paths  = self.data.D_tr_img_paths[phase - 1]
+            prev_labels = self.data.D_tr_labels[phase - 1]
 
             self.replay_buffer.sample(prev_best_model, prev_paths, prev_labels)
             replay_paths, replay_labels = self.replay_buffer.get_all()
         
-            current_paths  = self.data['D_tr_img_paths'][phase]
-            current_labels = self.data['D_tr_labels'][phase]
+            current_paths  = self.data.D_tr_img_paths[phase]
+            current_labels = self.data.D_tr_labels[phase]
         
             tr_paths  = replay_paths + current_paths
             tr_labels = replay_labels + current_labels
@@ -233,14 +204,14 @@ class TripletTrainer(TrainerBase):
             gallery_labels = tr_labels.copy()
         
         elif self.strategy == "finetune":
-            tr_paths  = self.data['D_tr_img_paths'][phase]
-            tr_labels = self.data['D_tr_labels'][phase]
-            gallery_paths = sum(self.data['D_tr_img_paths'][:phase+1], [])
-            gallery_labels = sum(self.data['D_tr_labels'][:phase+1], [])
+            tr_paths  = self.data.D_tr_img_paths[phase]
+            tr_labels = self.data.D_tr_labels[phase]
+            gallery_paths = sum(self.data.D_tr_img_paths[:phase+1], [])
+            gallery_labels = sum(self.data.D_tr_labels[:phase+1], [])
             
         elif self.strategy == "full":
-            tr_paths = sum(self.data['D_tr_img_paths'][:phase+1], [])
-            tr_labels = sum(self.data['D_tr_labels'][:phase+1], [])
+            tr_paths = sum(self.data.D_tr_img_paths[:phase+1], [])
+            tr_labels = sum(self.data.D_tr_labels[:phase+1], [])
             gallery_paths = tr_paths.copy()
             gallery_labels = tr_labels.copy()
         

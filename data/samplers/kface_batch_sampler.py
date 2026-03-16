@@ -2,19 +2,33 @@ import math
 import numpy as np
 from torch.utils.data import Sampler
 from collections import defaultdict
+from typing import Iterator, List, Dict, Sized
+
+
 
 class KFaceBatchSampler(Sampler):
-    def __init__(self, dataset, batch_size, num_of_images=2, seed=1004):
+    """
+    Metric Learning을 위한 Batch Sampler.
+    
+    """
+    def __init__(
+        self, 
+        dataset, 
+        batch_size, 
+        num_of_images=2, 
+        seed=1004
+    ):
         
         self.dataset = dataset
         self.batch_size = batch_size
         self.num_of_images = num_of_images
         self.seed = seed
         
+        labels = dataset.labels
+        
         self.class_to_indices = defaultdict(list)
-        for idx, img_path in enumerate(self.dataset.image_paths):
-            person = img_path.split('/')[-5]
-            self.class_to_indices[person].append(idx)
+        for idx, label in enumerate(labels):
+            self.class_to_indices[label].append(idx)
             
         self.classes = list(self.class_to_indices.keys())
         
